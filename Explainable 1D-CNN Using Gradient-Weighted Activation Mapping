@@ -1,0 +1,123 @@
+import os
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
+
+# ────────── paths ──────────
+DATA_DIR   = r"" # post-evaluation set directory
+MODEL_PATH = r""  # the directory of saved model
+
+# ────────── helper functions ───────────────────────────────────────────
+def load_spectra_and_labels(root):
+    data, labels, raman = [], [], None
+    for cls in sorted(os.listdir(root)):
+        sub = os.path.join(root, cls)
+        if not os.path.isdir(sub):
+            continue
+        for fn in os.listdir(sub):
+            if fn.lower().endswith('.txt'):
+                x, y = np.loadtxt(os.path.join(sub, fn),
+                                  delimiter='\t', unpack=True)
+                if raman is None:
+                    raman = x
+                data.append(y)
+                labels.append(cls)
+    return np.vstack(data), np.array(labels), raman
+
+def gradient_saliency_x_input(model, X, positive=True):
+    """
+    positive=True  ⇒ returns | ∂p/∂X  * X |     (p = P(pTyr))
+    positive=False ⇒ returns | ∂(1−p)/∂X * X |
+    """
+    Xtf = tf.convert_to_tensor(X, tf.float32)
+    with tf.GradientTape() as tape:
+        tape.watch(Xtf)
+        p = model(Xtf)[:,0]                     # shape (n,)
+        score =      p if positive else (1.0 - p)
+    grads = tape.gradient(score, Xtf).numpy().squeeze()  
+    X_np  = X.squeeze()                                  
+    sal   = np.abs(grads * X_np)                       
+    return sal
+
+
+def peak_frequency(X, prom=0.4, h=0.5):
+    Xf = X.reshape(X.shape[0], -1)
+    n, m = Xf.shape
+    present = np.zeros((n, m), bool)
+    for i in range(n):
+        y = (Xf[i] - Xf[i].min()) / Xf[i].ptp()
+        pk, _ = find_peaks(y, prominence=prom, height=h)
+        present[i, pk] = True
+    return present.sum(0) / n
+
+# ────────── main ───────────────────────────────────────────────────────
+model        = tf.keras.models.load_model(MODEL_PATH)
+data, labels, raman = load_spectra_and_labels(DATA_DIR)
+X            = data[..., None]               # (n_samples, 1220, 1)
+y            = (labels == "pTyr").astype(int)
+
+G_tyr  = gradient_saliency_x_input(model, X[y==0], positive=False)
+G_ptyr = gradient_saliency_x_input(model, X[y==1], positive=True)
+
+tyr_w  = G_tyr.mean(0)
+ptyr_w = G_ptyr.mean(0)
+tyr_w  /= tyr_w.max()
+ptyr_w /= ptyr_w.max()
+
+# per-class peak frequencies
+freq_tyr  = peak_frequency(X[y==0])
+freq_ptyr = peak_frequency(X[y==1])
+
+# ────────── plot ───────────────────────────────────────────────────────
+fig, (ax1, ax2) = plt.subplots(2,1, sharex=True, figsize=(12,6), dpi=200,
+                               gridspec_kw={'hspace':0.05})
+w = raman[1] - raman[0]
+
+# Tyr
+ax1.plot(raman, tyr_w,  color='C0', lw=1.6)  # Corrected variable name
+ax1.set_ylabel("Normalized\nFeature Weight", color='C0', fontsize=12, fontweight='bold')  # Add newline for wrapping
+ax1.tick_params(axis='y', labelcolor='C0')
+
+# Adjust y-axis limits for ax1 to add space
+y_min_ax1, y_max_ax1 = ax1.get_ylim()  # Get current y-axis limits
+ax1.set_ylim(y_min_ax1, y_max_ax1 * 1.1)  # Increase the upper limit by 10%
+
+ax1b = ax1.twinx()
+ax1b.bar(raman, freq_tyr, width=w, color='0.25', alpha=0.5)  # Corrected variable name
+ax1b.set_ylabel("Peak Occurrence\nFrequency", color='0.25', fontsize=12, fontweight='bold')  # Add newline for wrapping
+ax1b.tick_params(axis='y', labelcolor='0.25')
+
+# Adjust y-axis limits for ax1b to add space if necessary
+y_min_ax1b, y_max_ax1b = ax1b.get_ylim()  # Get current y-axis limits for twin axis
+ax1b.set_ylim(y_min_ax1b, y_max_ax1b * 1.1)  # Increase the upper limit by 10%
+
+# pTyr
+ax2.plot(raman, ptyr_w, color='C3', lw=1.6)  # Corrected variable name
+ax2.set_ylabel("Normalized\nFeature Weight", color='C3', fontsize=12, fontweight='bold')  # Add newline for wrapping
+ax2.tick_params(axis='y', labelcolor='C3')
+
+# Adjust y-axis limits for ax2 to add space
+y_min_ax2, y_max_ax2 = ax2.get_ylim()  # Get current y-axis limits
+ax2.set_ylim(y_min_ax2, y_max_ax2 * 1.1)  # Increase the upper limit by 10%
+
+ax2b = ax2.twinx()
+ax2b.bar(raman, freq_ptyr, width=w, color='0.25', alpha=0.5)  # Corrected variable name
+ax2b.set_ylabel("Peak Occurrence\nFrequency", color='0.25', fontsize=12, fontweight='bold')  # Add newline for wrapping
+ax2b.tick_params(axis='y', labelcolor='0.25')
+
+# Adjust y-axis limits for ax2b to add space if necessary
+y_min_ax2b, y_max_ax2b = ax2b.get_ylim()  # Get current y-axis limits for twin axis
+ax2b.set_ylim(y_min_ax2b, y_max_ax2b * 1.1)  # Increase the upper limit by 10%
+
+ax2.set_xlabel("Raman Shift (cm$^{-1}$)", fontsize=12, fontweight='bold')
+ax2.set_xlim(raman[0], raman[-1])
+plt.tight_layout()
+plt.show()
+
+out_dir = r"" # your directory to save outputs
+os.makedirs(out_dir, exist_ok=True)
+
+# save high-res figure
+fname = os.path.join(out_dir, 'feature_weights.png')
+fig.savefig(fname, dpi=300, format='png', bbox_inches='tight')
