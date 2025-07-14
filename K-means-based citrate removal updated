@@ -1,0 +1,125 @@
+clc; clear; close all;
+
+% Folder paths
+folderA = ""; % Directory of Target molecule 1
+folderB = ""; % Directory of Target molecule 2
+folderC = ""; % Directory of Citrate
+
+% Create output folders
+mkdir('pure-A');
+mkdir('pure-B');
+mkdir('contaminated');
+mkdir('figures');
+
+% Load spectra
+[wavenumberA, spectraA] = loadSpectra(folderA);
+[wavenumberB, spectraB] = loadSpectra(folderB);
+[wavenumberC, spectraC] = loadSpectra(folderC);
+
+filesA = dir(fullfile(folderA, '*.txt'));
+filesB = dir(fullfile(folderB, '*.txt'));
+filesC = dir(fullfile(folderC, '*.txt'));
+
+allSpectra = [spectraA; spectraB; spectraC];
+labels = [ones(size(spectraA,1),1); 2*ones(size(spectraB,1),1); 3*ones(size(spectraC,1),1)];
+
+rng default
+numPCAcomponents = 30;
+[coeff, score, ~, ~, explained] = pca(allSpectra);
+pcaData = score(:, 1:numPCAcomponents);
+
+Y = tsne(pcaData);
+
+figure;
+gscatter(Y(:,1), Y(:,2), labels, 'rgb', 'ox+');
+xlabel('t-SNE 1', 'FontSize', 14);
+ylabel('t-SNE 2', 'FontSize', 14);
+title('Figure 1: t-SNE Visualization of Spectra (True Labels)', 'FontSize', 16);
+legend({'Tyr','pTyr','Citrate'}, 'FontSize', 12, 'Location', 'bestoutside');
+grid off;
+axis equal;
+set(gca,'Box','on');
+saveas(gcf, fullfile('figures','fig1_tsne_true_labels.png'));
+
+% k-means on PCA-tSNE data
+k = 3;
+[idx, C] = kmeans(Y, k, 'Replicates', 10);
+
+figure;
+gscatter(Y(:,1), Y(:,2), idx, 'rgb', 'ox+');
+hold on;
+plot(C(:,1), C(:,2), 'kp', 'MarkerSize', 12, 'MarkerFaceColor', 'k');
+text(Y(:,1)+0.5, Y(:,2), string(idx), 'FontSize', 8);
+xlabel('t-SNE 1', 'FontSize', 14);
+ylabel('t-SNE 2', 'FontSize', 14);
+title('Figure 2: k-means Clustering on t-SNE Reduced Data', 'FontSize', 16);
+legend({'Cluster 1','Cluster 2','Cluster 3','Centroids'}, 'FontSize', 12, 'Location', 'bestoutside');
+grid off;
+axis equal;
+set(gca,'Box','on');
+saveas(gcf, fullfile('figures','fig2_kmeans_tsne.png'));
+
+nA = size(spectraA, 1);
+nB = size(spectraB, 1);
+idxA = idx(1:nA);
+idxB = idx(nA+1:nA+nB);
+idxC = idx(nA+nB+1:end);
+
+contaminatedCluster = mode(idxC);
+pureA_indices = find(idxA ~= contaminatedCluster);
+contaminatedA_indices = find(idxA == contaminatedCluster);
+pureB_indices = find(idxB ~= contaminatedCluster);
+contaminatedB_indices = find(idxB == contaminatedCluster);
+
+for i = 1:numel(pureA_indices)
+    copyfile(fullfile(folderA, filesA(pureA_indices(i)).name), fullfile('pure-A', filesA(pureA_indices(i)).name));
+end
+for i = 1:numel(contaminatedA_indices)
+    copyfile(fullfile(folderA, filesA(contaminatedA_indices(i)).name), fullfile('contaminated', filesA(contaminatedA_indices(i)).name));
+end
+for i = 1:numel(pureB_indices)
+    copyfile(fullfile(folderB, filesB(pureB_indices(i)).name), fullfile('pure-B', filesB(pureB_indices(i)).name));
+end
+for i = 1:numel(contaminatedB_indices)
+    copyfile(fullfile(folderB, filesB(contaminatedB_indices(i)).name), fullfile('contaminated', filesB(contaminatedB_indices(i)).name));
+end
+
+% PCA+t-SNE and k-means on pure spectra
+pureSpectra = [spectraA(pureA_indices,:); spectraB(pureB_indices,:)];
+pureLabels = [ones(size(pureA_indices)); 2*ones(size(pureB_indices))];
+
+[~, score_pure] = pca(pureSpectra);
+pcaData_pure = score_pure(:, 1:numPCAcomponents);
+
+Y_pure = tsne(pcaData_pure);
+
+k = 2;
+[idx_pure_kmeans, C_pure] = kmeans(Y_pure, k, 'Replicates', 10);
+
+figure;
+gscatter(Y_pure(:,1), Y_pure(:,2), idx_pure_kmeans, 'rg', 'ox');
+hold on;
+plot(C_pure(:,1), C_pure(:,2), 'kp', 'MarkerSize',12,'MarkerFaceColor','k');
+text(Y_pure(:,1)+0.5, Y_pure(:,2), string(idx_pure_kmeans), 'FontSize', 8);
+xlabel('t-SNE 1','FontSize',14);
+ylabel('t-SNE 2','FontSize',14);
+title('Figure 3: t-SNE Clustering of Citrate-free Tyr and pTyr','FontSize',16);
+legend({'Cluster 1','Cluster 2','Centroids'},'FontSize',12,'Location','bestoutside');
+grid off;
+axis equal;
+set(gca,'Box','on');
+saveas(gcf, fullfile('figures','fig3_tsne_kmeans_pure_spectra.png'));
+
+disp('Clustering complete. Results saved in pure-A, pure-B, contaminated, and figures folders.');
+
+function [wavenumber, spectra] = loadSpectra(folderPath)
+    files = dir(fullfile(folderPath, '*.txt'));
+    nFiles = numel(files);
+    first = readmatrix(fullfile(folderPath, files(1).name));
+    wavenumber = first(:,1);
+    spectra = zeros(nFiles, numel(wavenumber));
+    for j = 1:nFiles
+        data = readmatrix(fullfile(folderPath, files(j).name));
+        spectra(j,:) = data(:,2);
+    end
+end
